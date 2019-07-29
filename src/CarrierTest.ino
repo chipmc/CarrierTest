@@ -3,6 +3,11 @@
  * Description: Tests the Electron Carrier
  * Author: Charles McClelland
  * Date: Started 1-4-2017 
+ * 
+ * 
+ * v0.21 - Initial release under version control
+ * v0.22 - Removing the Accelerometer i2c test as we test this bus with the FRAM already
+ */
 
  // Easy place to change global numbers
  //These defines let me change the memory map and configuration without hunting through the whole program
@@ -12,42 +17,15 @@
  #define VERSIONADDR 0x0             // Memory Locations By Name not Number
  #define TESTPASSEDADDR 0x1          // To keep from running the test over and again
 
- // The SparkFun MMA8452 breakout board defaults to 1, set to 0 if SA0 jumper on the bottom of the board is set
-#define SA0 1
-#if SA0
-#define MMA8452_ADDRESS 0x1D  // SA0 is high, 0x1C if low
-#else
-#define MMA8452_ADDRESS 0x1C
-#endif
 
-const char releaseNumber[6] = "0.21";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "0.22";               // Displays the release on the menu ****  this is not a production release ****
 
-
-/*	MMA8452Q-Serial_Example.ino
-	Jim Lindblom <jim@sparkfun.com>
-	August 31, 2015
-	https://github.com/sparkfun/SparkFun_MMA8452Q_Particle_Library
-
-	This is a simple example sketch for the SparkFun MMA8452Q
-	Particle library. It'll connect to an MMA8452Q and stream the
-	values out the serial port as the become available.
-	Development environment specifics:
-	Particle Build environment (https://www.particle.io/build)
-	Particle Photon
-	Distributed as-is; no warranty is given.
-*/
-// Include the library:
-#include "SparkFunMMA8452Q/SparkFunMMA8452Q.h"
-
-// Create an MMA8452Q object, used throughout the rest of the sketch.
-MMA8452Q accel; // Default constructor, SA0 pin is HIGH
 
  // Included Libraries
  #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
  #include "FRAM-Library-Extensions.h"                     // Extends the FRAM Library
  #include "electrondoc.h"                                 // Documents pinout
- #include "MMA8452-Functions.h"                           // Adds the accelerometer functions
-
+ 
 
  // Prototypes and System Mode calls
  SYSTEM_THREAD(ENABLED);         // Means my code will not be held up by Particle processes.
@@ -56,8 +34,8 @@ MMA8452Q accel; // Default constructor, SA0 pin is HIGH
 
  // Pin Constants for Electron
 
- #if PLATFORM_ID==10                              // Electron
- #define WIRING_int2Pin D2                       // Acclerometer interrupt pin
+ #if PLATFORM_ID==10                            // Electron
+ #define WIRING_int2Pin D2                      // Acclerometer interrupt pin
  #define WIRING_blueLED  D7                     // This LED is on the Electron itself
  #define WIRING_userSwitch  D5                  // User switch with a pull-up resistor
  #define WIRING_tmp36Pin  A0                    // Simple Analog temperature sensor
@@ -67,7 +45,7 @@ MMA8452Q accel; // Default constructor, SA0 pin is HIGH
  #define WIRING_hardResetPin  D4                // Power Cycles the Electron and the Carrier Board
  #endif 
 
- #if PLATFORM_ID==12 || PLATFORM_ID == 13         // Boron or Argon
+ #if PLATFORM_ID==12 || PLATFORM_ID == 13       // Boron or Argon
  #define WIRING_int2Pin  D2                     // Acclerometer interrupt pin
  #define WIRING_blueLED  D7                     // This LED is on the Electron itself
  #define WIRING_userSwitch  D4                  // User switch with a pull-up resistor
@@ -85,12 +63,6 @@ MMA8452Q accel; // Default constructor, SA0 pin is HIGH
  unsigned long updateInterval = 60000;
  unsigned long lastUpdate;
 
-
- // Accelerometer Variables
-const byte accelFullScaleRange = 2;  // Sets full-scale range to +/-2, 4, or 8g. Used to calc real g values.
-const byte dataRate = 3;             // output data rate - 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
-byte Sensitivity = 0;                    // Hex variable for sensitivity - Initialized in Setup (0 - most to 128 - least sensitive)
-volatile bool sensorDetect = false;       // This is the flag that an interrupt is triggered
 
 // Battery monitor
 int stateOfCharge = 0;            // stores battery charge level value
@@ -113,8 +85,6 @@ void setup() {
   Particle.variable("Release",releaseNumber);
   Particle.variable("stateOfChg", stateOfCharge);
   Particle.function("HardReset",hardResetNow);
-
-  attachInterrupt(WIRING_wakeUpPin, watchdogISR, RISING);   // The watchdog timer will signal us and we have to respond
 
   if (!Particle.connected()) {                                     // Only going to connect if we are in connectionMode
     Particle.connect();
@@ -160,48 +130,23 @@ void loop() {
   delay(1000);
   Particle.process();
 
-  Particle.publish("Test #4", "Started testing Accelerometer - pls wait", PRIVATE);
-  unsigned long waitForAccel = millis();
-  // Initialize the accelerometer with begin():
-  // begin can take two parameters: full-scale range, and output data rate (ODR).
-  // Full-scale range can be: SCALE_2G, SCALE_4G, or SCALE_8G (2, 4, or 8g)
-  // ODR can be: ODR_800, ODR_400, ODR_200, ODR_100, ODR_50, ODR_12, ODR_6 or ODR_1
-  accel.begin(SCALE_2G, ODR_1); // Set up accel with +/-2g range, and slowest (1Hz) ODR
-  do {
-    if (accel.available())
-    {
-    // To update acceleration values from the accelerometer, call accel.read();
-        accel.read();
-
-    // After reading, six class variables are updated: x, y, z, cx, cy, and cz.
-    // Those are the raw, 12-bit values (x, y, and z) and the calculated
-    // acceleration's in units of g (cx, cy, and cz).
-    Particle.process();
-    }
-
-  } while (millis() <= waitForAccel + 30000);  // Give it 30 seconds.
-  snprintf(data, sizeof(data), "Acceleration Data is X: %2.1f, Y: %2.1f, Z: %2.1f", accel.cx, accel.cy, accel.cz);
-  Particle.publish("Test #4", data, PRIVATE);
-  delay(1000);
-  Particle.process();
-
   do {
     if (millis() >= updateInterval + lastUpdate) {
       stateOfCharge = int(batteryMonitor.getSoC());             // Percentage of full charge
       snprintf(data, sizeof(data), "Battery charge level = %i", stateOfCharge);
-      Particle.publish("Test #5", data, PRIVATE);
+      Particle.publish("Test #4", data, PRIVATE);
       Particle.process();
       lastUpdate = millis();
     }
   }  while(stateOfCharge <= 65);
-  Particle.publish("Test #6", "Battery charge test passed", PRIVATE);
+  Particle.publish("Test #5", "Battery charge test passed", PRIVATE);
 
 
   time_t beginTime = Time.now();
   watchdogISR();
   watchdogInterrupt = false;
 
-  if (Particle.connected()) Particle.publish("Test #7 Started","Expect this test to take ~60 minutes",PRIVATE);
+  if (Particle.connected()) Particle.publish("Test #6 Started","Expect this test to take ~60 minutes",PRIVATE);
   delay(1000);
   Particle.process();
 
@@ -212,7 +157,7 @@ void loop() {
 
   int elapsedMinutes = (Time.now() - beginTime)/60;
   snprintf(data, sizeof(data), "Elapsed time in minutes is %i", elapsedMinutes);
-  if (Particle.connected()) Particle.publish("Test #7 Finished", data ,PRIVATE);
+  if (Particle.connected()) Particle.publish("Test #6 Finished", data ,PRIVATE);
   delay(1000);
   Particle.process();
 
