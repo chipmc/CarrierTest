@@ -13,6 +13,7 @@
  * 
  * v0.21 - Initial release under version control
  * v0.22 - Removing the Accelerometer i2c test as we test this bus with the FRAM already
+ * v0.23 - Adding signal strength
  */
 
  // Easy place to change global numbers
@@ -22,8 +23,10 @@ void loop();
 int getTemperature();
 void watchdogISR();
 void BlinkForever();
+int measureNow(String command);
+void getSignalStrength();
 int hardResetNow(String command);
-#line 14 "/Users/chipmc/Documents/Maker/Particle/Projects/CarrierTest/src/CarrierTest.ino"
+#line 15 "/Users/chipmc/Documents/Maker/Particle/Projects/CarrierTest/src/CarrierTest.ino"
 #define VERSIONNUMBER 7             // Increment this number each time the memory map is changed
  #define WORDSIZE 8                  // For the Word size
  #define PAGESIZE 4096               // Memory size in bytes / word size - 256kb FRAM
@@ -32,6 +35,8 @@ int hardResetNow(String command);
 
 
 const char releaseNumber[6] = "0.22";               // Displays the release on the menu ****  this is not a production release ****
+char SignalString[64];                              // Used to communicate Wireless RSSI and Description
+const char* radioTech[10] = {"Unknown","None","WiFi","GSM","UMTS","CDMA","LTE","IEEE802154","LTE_CAT_M1","LTE_CAT_NB1"};
 
 
  // Included Libraries
@@ -45,29 +50,14 @@ const char releaseNumber[6] = "0.22";               // Displays the release on t
  FuelGauge batteryMonitor;       // Prototype for the fuel gauge (included in Particle core library)
 
 
- // Pin Constants for Electron
-
- #if PLATFORM_ID==10                            // Electron
- #define WIRING_int2Pin D2                      // Acclerometer interrupt pin
- #define WIRING_blueLED  D7                     // This LED is on the Electron itself
- #define WIRING_userSwitch  D5                  // User switch with a pull-up resistor
- #define WIRING_tmp36Pin  A0                    // Simple Analog temperature sensor
- #define WIRING_tmp36Shutdwn  B5                // Can turn off the TMP-36 to save energy
- #define WIRING_donePin  D6                     // Pin the Electron uses to "pet" the watchdog
- #define WIRING_wakeUpPin  A7                   // This is the Particle Electron WKP pin
- #define WIRING_hardResetPin  D4                // Power Cycles the Electron and the Carrier Board
- #endif 
-
- #if PLATFORM_ID==12 || PLATFORM_ID == 13       // Boron or Argon
- #define WIRING_int2Pin  D2                     // Acclerometer interrupt pin
- #define WIRING_blueLED  D7                     // This LED is on the Electron itself
- #define WIRING_userSwitch  D4                  // User switch with a pull-up resistor
- #define WIRING_tmp36Pin  A4                    // Simple Analog temperature sensor
- #define WIRING_tmp36Shutdwn  B5                // Can turn off the TMP-36 to save energy
- #define WIRING_donePin  A3                     // Pin the Electron uses to "pet" the watchdog
- #define WIRING_wakeUpPin  D8                   // This is the Particle Electron WKP pin
- #define WIRING_hardResetPin  D6                // Power Cycles the Electron and the Carrier Board
- #endif
+// Pin Constants - Electron Carrier Board
+const int tmp36Pin =      A0;                       // Simple Analog temperature sensor
+const int wakeUpPin =     A7;                       // This is the Particle Electron WKP pin
+const int tmp36Shutdwn =  B5;                       // Can turn off the TMP-36 to save energy
+const int hardResetPin =  D4;                       // Power Cycles the Electron and the Carrier Board
+const int donePin =       D6;                       // Pin the Electron uses to "pet" the watchdog
+const int blueLED =       D7;                       // This LED is on the Electron itself
+const int userSwitch =    D5;                       // User switch with a pull-up resistor
 
 
  // Program Variables
@@ -75,8 +65,6 @@ const char releaseNumber[6] = "0.22";               // Displays the release on t
  volatile bool watchdogInterrupt = false;               // variable used to see if the watchdogInterrupt had fired
  unsigned long updateInterval = 60000;
  unsigned long lastUpdate;
-
-
 // Battery monitor
 int stateOfCharge = 0;            // stores battery charge level value
 
@@ -84,20 +72,22 @@ int stateOfCharge = 0;            // stores battery charge level value
 
 // setup() runs once, when the device is first turned on.
 void setup() {
-  pinMode(WIRING_int2Pin,INPUT);                                          // PIR Sensor Interrupt pin
-  pinMode(WIRING_userSwitch,INPUT);                                      // Button for user input
-  pinMode(WIRING_wakeUpPin,INPUT);                                       // This pin is active HIGH
-  pinMode(WIRING_blueLED, OUTPUT);                                       // declare the Blue LED Pin as an output
-  pinMode(WIRING_tmp36Shutdwn,OUTPUT);                                   // Supports shutting down the TMP-36 to save juice
-  digitalWrite(WIRING_tmp36Shutdwn, HIGH);                               // Turns on the temp sensor
-  pinMode(WIRING_donePin,OUTPUT);                                        // Allows us to pet the watchdog
-  digitalWrite(WIRING_donePin,HIGH);
-  digitalWrite(WIRING_donePin,LOW);                                      // Pet the watchdog
-  pinMode(WIRING_hardResetPin,OUTPUT);                                   // For a hard reset active HIGH
+
+  pinMode(userSwitch,INPUT);                                      // Button for user input
+  pinMode(wakeUpPin,INPUT);                                       // This pin is active HIGH
+  pinMode(blueLED, OUTPUT);                                       // declare the Blue LED Pin as an output
+  pinMode(donePin,OUTPUT);                                        // Allows us to pet the watchdog
+  digitalWrite(donePin,HIGH);
+  digitalWrite(donePin,LOW);                                      // Pet the watchdog
+  pinMode(hardResetPin,OUTPUT);                                   // For a hard reset active HIGH
 
   Particle.variable("Release",releaseNumber);
   Particle.variable("stateOfChg", stateOfCharge);
   Particle.function("HardReset",hardResetNow);
+  Particle.variable("Signal", SignalString);
+  Particle.function("measureNow",measureNow);
+
+
 
   if (!Particle.connected()) {                                     // Only going to connect if we are in connectionMode
     Particle.connect();
@@ -138,7 +128,7 @@ void loop() {
 
   Particle.publish("Test #3", "Press User Switch",PRIVATE);
   delay(1000);
-  while(digitalRead(WIRING_userSwitch)) Particle.process();
+  while(digitalRead(userSwitch)) Particle.process();
   Particle.publish("Test #3", "User Switch Press Detected",PRIVATE);
   delay(1000);
   Particle.process();
@@ -178,7 +168,7 @@ void loop() {
   delay(1000);
   Particle.process();
 
-  digitalWrite(WIRING_hardResetPin,HIGH);                    // Zero the count so only every three
+  digitalWrite(hardResetPin,HIGH);                    // Zero the count so only every three
 
   Particle.publish("Test #7", "If you see this message - hard reset test failed", PRIVATE);
   BlinkForever();
@@ -186,7 +176,7 @@ void loop() {
 
 int getTemperature()
 {
-  int reading = analogRead(WIRING_tmp36Pin);   //getting the voltage reading from the temperature sensor
+  int reading = analogRead(tmp36Pin);   //getting the voltage reading from the temperature sensor
   float voltage = reading * 3.3;        // converting that reading to voltage, for 3.3v arduino use 3.3
   voltage /= 4096.0;                    // Electron is different than the Arduino where there are only 1024 steps
   int temperatureC = int(((voltage - 0.5) * 100));  //converting from 10 mv per degree with 500 mV offset to degrees ((voltage - 500mV) times 100) - 5 degree calibration
@@ -197,28 +187,54 @@ int getTemperature()
 void watchdogISR()
 {
   watchdogInterrupt = true;
-  digitalWrite(WIRING_donePin, HIGH);                              // Pet the watchdog
-  digitalWrite(WIRING_donePin, LOW);
+  digitalWrite(donePin, HIGH);                              // Pet the watchdog
+  digitalWrite(donePin, LOW);
 }
 
 void BlinkForever() {
   delay(1000);
   Particle.publish("Test Failed" "Reset Device to Continue", PRIVATE);
   while(1) {
-    digitalWrite(WIRING_blueLED,HIGH);
+    digitalWrite(blueLED,HIGH);
     delay(2000);
-    digitalWrite(WIRING_blueLED,LOW);
+    digitalWrite(blueLED,LOW);
     delay(2000);
     Particle.process();
   }
 }
 
 
+int measureNow(String command) {                                           // Function to force sending data in current hour
+
+  if (command == "1")
+  {
+    getSignalStrength();
+    return 1;
+  }
+  else return 0;
+}
+
+void getSignalStrength()
+{
+  // New Signal Strength capability - https://community.particle.io/t/boron-lte-and-cellular-rssi-funny-values/45299/8
+  CellularSignal sig = Cellular.RSSI();
+
+  auto rat = sig.getAccessTechnology();
+ 
+  //float strengthVal = sig.getStrengthValue();
+  float strengthPercentage = sig.getStrength();
+
+  //float qualityVal = sig.getQualityValue();
+  float qualityPercentage = sig.getQuality();
+
+  snprintf(SignalString,sizeof(SignalString), "%s S:%2.0f%%, Q:%2.0f%% ", radioTech[rat], strengthPercentage, qualityPercentage);
+}
+
 int hardResetNow(String command)                                      // Will perform a hard reset on the Electron
 {
   if (command == "1")
   {
-    digitalWrite(WIRING_hardResetPin,HIGH);                                  // This will cut all power to the Electron AND the carrir board
+    digitalWrite(hardResetPin,HIGH);                                  // This will cut all power to the Electron AND the carrir board
     return 1;                                                         // Unfortunately, this will never be sent
   }
   else return 0;
